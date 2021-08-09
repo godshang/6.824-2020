@@ -58,6 +58,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	CommandData  []byte
 }
 
 type LogEntry struct {
@@ -96,6 +97,7 @@ type Raft struct {
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1
 	matchIndex []int // for each server, index of the highest log entry known to be replicated on server (initialized to 0, increase monotonically)
 
+	snapshottedIndex  int
 	lastIncludedIndex int
 	lastIncludedTerm  int
 
@@ -126,16 +128,21 @@ func (rf *Raft) persist() {
 	if len(rf.logEntries) < 1 {
 		return
 	}
+	rf.persister.SaveRaftState(rf.encodeRaftState())
+}
+
+func (rf *Raft) encodeRaftState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logEntries)
-	//e.Encode(rf.lastIncludedIndex)
-	//e.Encode(rf.lastIncludedTerm)
+	e.Encode(rf.snapshottedIndex)
+	return w.Bytes()
+}
 
-	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
 }
 
 //
@@ -147,33 +154,25 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 
-	if data == nil || len(data) < 1 {
-		return
-	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var (
-		currentTerm       int
-		votedFor          int
-		logEntries        []LogEntry
-		//lastIncludedIndex int
-		//lastIncludedTerm  int
+		currentTerm      int
+		votedFor         int
+		logEntries       []LogEntry
+		snapshottedIndex int
 	)
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logEntries) != nil {
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logEntries) != nil || d.Decode(&snapshottedIndex) != nil {
 		return
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.logEntries = logEntries
+		rf.snapshottedIndex = snapshottedIndex
+
+		rf.commitIndex = snapshottedIndex
+		rf.lastApplied = snapshottedIndex
 	}
-	//if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
-	//	return
-	//} else {
-	//	rf.lastIncludedIndex = lastIncludedIndex
-	//	rf.lastIncludedTerm = lastIncludedTerm
-	//	rf.commitIndex = lastIncludedIndex
-	//	rf.lastApplied = lastIncludedIndex
-	//}
 }
 
 //
@@ -346,31 +345,6 @@ func (rf *Raft) eventLoop() {
 	}()
 }
 
-func (rf *Raft) switchTo(role Role) {
-	if rf.role == role {
-		return
-	}
-	rf.role = role
-	switch role {
-	case Follower:
-		rf.heartbeatTimer.Stop()
-		rf.electionTimer.Reset(randElectionTimeout())
-		rf.votedFor = None
-	case Candidate:
-		rf.startElection()
-	case Leader:
-		for i := range rf.nextIndex {
-			rf.nextIndex[i] = len(rf.logEntries)
-		}
-		for i := range rf.matchIndex {
-			rf.matchIndex[i] = 0
-		}
-		rf.electionTimer.Stop()
-		rf.heartbeats()
-		rf.heartbeatTimer.Reset(HeartBeatTimeout)
-	}
-}
-
 func (rf *Raft) becomeFollower(term int) {
 	rf.role = Follower
 	rf.currentTerm = term
@@ -385,12 +359,13 @@ func (rf *Raft) becomeCandidate() {
 }
 
 func (rf *Raft) becomeLeader() {
+	rf.log("become leader")
 	rf.role = Leader
 	for i := range rf.nextIndex {
-		rf.nextIndex[i] = len(rf.logEntries)
+		rf.nextIndex[i] = rf.getAbsoluteLogIndex(len(rf.logEntries))
 	}
 	for i := range rf.matchIndex {
-		rf.matchIndex[i] = 0
+		rf.matchIndex[i] = rf.snapshottedIndex
 	}
 	rf.electionTimer.Stop()
 	rf.heartbeats()
@@ -399,8 +374,16 @@ func (rf *Raft) becomeLeader() {
 
 func (rf *Raft) lastLogTermIndex() (int, int) {
 	term := rf.logEntries[len(rf.logEntries)-1].Term
-	index := len(rf.logEntries) - 1
+	index := rf.getAbsoluteLogIndex(len(rf.logEntries) - 1)
 	return term, index
+}
+
+func (rf *Raft) getAbsoluteLogIndex(index int) int {
+	return index + rf.snapshottedIndex
+}
+
+func (rf *Raft) getRelativeLogIndex(index int) int {
+	return index - rf.snapshottedIndex
 }
 
 func (rf *Raft) log(format string, a ...interface{}) {
@@ -410,5 +393,5 @@ func (rf *Raft) log(format string, a ...interface{}) {
 	r := fmt.Sprintf(format, a...)
 	s := fmt.Sprintf("me=%d, role=%v, currentTerm=%d, nextIndex=%v, matchIndex=%v, commitIndex=%d, lastApplied=%d",
 		rf.me, rf.role, rf.currentTerm, rf.nextIndex, rf.matchIndex, rf.commitIndex, rf.lastApplied)
-	log.Printf("- %s - %s\n", s, r)
+	log.Printf("- raft - %s - %s\n", s, r)
 }

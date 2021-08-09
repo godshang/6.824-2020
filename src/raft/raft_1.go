@@ -309,7 +309,7 @@ package raft
 //
 //	//5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 //	if args.LeaderCommit > rf.commitIndex {
-//		rf.setCommitIndex(min(args.LeaderCommit, len(rf.log)-1))
+//		rf.advanceCommitIndex(min(args.LeaderCommit, len(rf.log)-1))
 //	}
 //
 //	reply.Success = true
@@ -566,7 +566,7 @@ package raft
 //
 //				if count > len(rf.peers)/2 {
 //					// most of nodes agreed on rf.log[i]
-//					rf.setCommitIndex(N)
+//					rf.advanceCommitIndex(N)
 //					break
 //				}
 //			}
@@ -646,7 +646,7 @@ package raft
 ////
 //// several setters, should be called with a lock
 ////
-//func (rf *Raft) setCommitIndex(commitIndex int) {
+//func (rf *Raft) advanceCommitIndex(commitIndex int) {
 //	rf.commitIndex = commitIndex
 //	// apply all entries between lastApplied and committed
 //	// should be called after commitIndex updated
